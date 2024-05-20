@@ -1,1 +1,230 @@
+== Dante SOCKS5 server on Opnsense
+// For help see https://docs.gitlab.com/ee/user/asciidoc.html
 
+
+==== Installation
+. freebsd-version
+// a + sign allows for insert of a codebox without breaking the list, ---- surrounds the code block to format it as a literal block.
++
+----
+13.2-RELEASE-p11
+----
+
+. uname -m
+
+. cd /tmp
+
+. fetch http://pkg.freebsd.org/FreeBSD:13:amd64/latest/packagesite.txz
+
+. tar -xf packagesite.txz
+
+. grep -i dante packagesite.yaml
+
+. grep -i miniupnpc packagesite.yaml
+
+. sudo pkg add http://pkg.freebsd.org/FreeBSD:13:amd64/latest/All/dante-1.4.3.pkg
+
+. sudo pkg add http://pkg.freebsd.org/FreeBSD:13:amd64/latest/All/miniupnpc-2.2.6_1.pkg
+
+==== Configuring
+
+Now you will need to setup the service. From my own requirements, I only needed that it could listen into the right interface (bridge0) and redirect traffic through the existing links (pppoe0 and pppoe1). Also, I don’t need authentication, which is fine since we are serving only to LAN clients who already have access to the whole outgoing network.
+
+With those requirements in mind, here’s the content that you should put into your /usr/local/etc/sockd.conf (remember to edit it as root):
+
+This box contains my NIC's
+
+ifconfig -l
+----
+em0 em1 lo0 enc0 pflog0 pfsync0
+----
+
+----
+# Logging
+logoutput: /var/log/sockd.log
+
+# User
+user.unprivileged: nobody
+
+# Bind ports
+internal: bridge0 port = 5000
+external: pppoe0
+external: pppoe1 
+external.rotation: route
+
+# Auth
+clientmethod: none
+socksmethod: none
+
+client pass {
+  from: 0.0.0.0/0 to: 0.0.0.0/0
+  log: error
+  clientmethod: none
+}
+
+# generic pass statement - bind/outgoing traffic
+socks pass {
+  from: 0.0.0.0/0 to: 0.0.0.0/0
+  command: bind connect udpassociate bindreply udpreply
+  socksmethod: none
+  log: error
+}
+----
+
+This is enough, now you can start the service:
+
+----
+# /usr/local/etc/rc.d/sockd onestart
+----
+
+==== Enabling the service on startup
+
+You will want to have this running when your box restarts. You will need to add it to the configuration file (config.xml).
+
+Edit the file /cf/conf/config.xml, and look for a specific section where it’s closing the </system> tag.
+
+Then add the following snippet:
+
+----
+<shellcmd>/usr/local/etc/rc.d/sockd onerestart</shellcmd>
+----
+
+==== Troubleshooting
+
+This is related to installing a package not from release repository
+
+
+===== Install dependencies:
+
+----
+root@OPNsense:/tmp # /usr/local/etc/rc.d/sockd onestart
+Starting sockd.
+ld-elf.so.1: Shared object "libgssapi.so.10" not found, required by "sockd"
+/usr/local/etc/rc.d/sockd: WARNING: failed to start sockd
+----
+
+. Create the Symbolic Link:
+You can create a symbolic link named libgssapi.so.10 that points to libgssapi_krb5.so.2 (or the most appropriate version you have)
+
++
+----
+ln -s /usr/local/lib/libgssapi_krb5.so.2 /usr/local/lib/libgssapi.so.10
+ldconfig -R
+/usr/local/etc/rc.d/sockd onestart
+----
+
+----
+now I get error message:
+
+ld-elf.so.1: Shared object "libgssapi_krb5.so.10" not found, required by "sockd"
+/usr/local/etc/rc.d/sockd: WARNING: failed to start sockd
+----
+
+.Create a Symbolic Link for libgssapi_krb5.so.10:
+Create a symbolic link named libgssapi_krb5.so.10 pointing to the existing libgssapi_krb5.so.2 (or the most appropriate version).
+
+----
+ln -s /usr/local/lib/libgssapi_krb5.so.2 /usr/local/lib/libgssapi_krb5.so.10
+ldconfig -R
+----
+
+now I get 
+
+
+ld-elf.so.1: Shared object "libheimntlm.so.11" not found, required by "sockd"
+/usr/local/etc/rc.d/sockd: WARNING: failed to start sockd
+
+. pkg install git
+. git clone https://git.freebsd.org/ports.git /usr/ports
+. cd /usr/ports/security/heimdal
+. make install clean
+. ldconfig -R
+
+
+=== Openvpn
+
+==== Import CA 
+
+. Goto System > Trust > Authorities : Add
+
+. Insert Descriptive name
+
+. Method : Import an existing Certificate Authority
+
+. Paste CA in Certificate data field
+
++
+Example 
++
+----
+-----BEGIN CERTIFICATE-----
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+-----END CERTIFICATE-----
+----
+. Save
+
+==== Import Openvpn config
+
+. Goto VPN > OpenVPN > Clients [Legacy] : Add
++
+Description: name
++
+Server Mode: Peer to Peer (SSL/TLS)
++
+Protocol: TCP4
++
+Interface: WAN
++
+Remote server: [Hostname] Port:  [Port]
++
+User name/pass:
++
+Username: login email
++
+Password: XXXXXXXXXXXXXX
++
+Cryptographic Settings
++
+TLS Authentication: Enabled - Authentication only
++
+TLS Shared Key
++
+----
+-----BEGIN OpenVPN Static key V1-----
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+-----END OpenVPN Static key V1-----
+----
++
+Peer Certificate Authority: name of CA 
++
+Client Certificate: None (Username and Password required)
++
+Encryption algorithm (deprecated): Look in .ovpn file for algorithm
++
+Auth Digest Algorithm: Look in .ovpn file for algorithm
++
+Advanced
++
+For fastestvpn:
++
+----
+tls-client;
+tun-mtu 1500;
+tun-mtu-extra 32;
+mssfix 1450;
+reneg-sec 0;
+remote-cert-tls server;
+----
+. Save
+
+
+==== Troubleshooting
+
+----
+AUTH: Received control message: AUTH_FAILED 
+----
+Is related to a too long password, goto openvpn provider and reset password and generate a shorter password.
