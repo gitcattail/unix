@@ -51,7 +51,7 @@ save file
 sudo chmod 400 /etc/openvpn/pass.conf
 ----
 +
-c) Configure openresolve to update dns to avoid dns leaks
+c) Configure openresolv to update dns to avoid dns leaks
 +
 ----
 touch /etc/openvpn/update-resolv-conf
