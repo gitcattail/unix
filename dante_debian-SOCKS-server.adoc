@@ -1,1 +1,239 @@
+== Dante SOCKS5 server on Debian
+// For help see https://docs.gitlab.com/ee/user/asciidoc.html
 
+
+==== Installation
+. Install debian in CLI or desktop
+// a + sign allows for insert of a codebox without breaking the list, ---- surrounds the code block to format it as a literal block.
+
+. Install packages
++
+----
+apt update && apt install openvpn openresolv dante ufw -y 
+----
+. Configure openvpn
++
+a) Configure openvpn start on startup as a service
++
+----
+nano sudo nano /etc/default/openvpn
+uncomment AUTOSTART="all"
+----
++
+save file
+
++
+b)  Add .ovpn files to config folder
++
+----
+touch /etc/openvpn/hungary.conf
+touch /etc/openvpn/pass.conf
+----
++
+----
+nano /etc/openvpn/hungary.conf
+add content from .ovpn file
+----
++
+save file
+
++
+----
+nano /etc/openvpn/pass.conf
+add credentials in following format:
+USERNAME
+PASSWORD
+----
++
+save file
++
+----
+sudo chmod 400 /etc/openvpn/pass.conf
+----
++
+c) Configure openresolve to update dns to avoid dns leaks
++
+----
+touch /etc/openvpn/update-resolv-conf
+----
++
+----
+nano /etc/openvpn/update-resolv-conf
+----
++
+Add this to update-resolv-conf
++
+----
+#!/usr/bin/env bash
+#
+# Parses DHCP options from openvpn to update resolv.conf
+# To use set as 'up' and 'down' script in your openvpn *.conf:
+# up /etc/openvpn/update-resolv-conf
+# down /etc/openvpn/update-resolv-conf
+#
+# Used snippets of resolvconf script by Thomas Hood <jdthood@yahoo.co.uk>
+# and Chris Hanson
+# Licensed under the GNU GPL.  See /usr/share/common-licenses/GPL.
+# 07/2013 colin@daedrum.net Fixed intet name
+# 05/2006 chlauber@bnc.ch
+#
+# Example envs set from openvpn:
+# foreign_option_1='dhcp-option DNS 193.43.27.132'
+# foreign_option_2='dhcp-option DNS 193.43.27.133'
+# foreign_option_3='dhcp-option DOMAIN be.bnc.ch'
+# foreign_option_4='dhcp-option DOMAIN-SEARCH bnc.local'
+
+## The 'type' builtins will look for file in $PATH variable, so we set the
+## PATH below. You might need to directly set the path to 'resolvconf'
+## manually if it still doesn't work, i.e.
+## RESOLVCONF=/usr/sbin/resolvconf
+export PATH=$PATH:/sbin:/usr/sbin:/bin:/usr/bin
+RESOLVCONF=$(type -p resolvconf)
+
+case $script_type in
+
+up)
+  for optionname in ${!foreign_option_*} ; do
+    option="${!optionname}"
+    echo $option
+    part1=$(echo "$option" | cut -d " " -f 1)
+    if [ "$part1" == "dhcp-option" ] ; then
+      part2=$(echo "$option" | cut -d " " -f 2)
+      part3=$(echo "$option" | cut -d " " -f 3)
+      if [ "$part2" == "DNS" ] ; then
+        IF_DNS_NAMESERVERS="$IF_DNS_NAMESERVERS $part3"
+      fi
+      if [[ "$part2" == "DOMAIN" || "$part2" == "DOMAIN-SEARCH" ]] ; then
+        IF_DNS_SEARCH="$IF_DNS_SEARCH $part3"
+      fi
+    fi
+  done
+  R=""
+  if [ "$IF_DNS_SEARCH" ]; then
+    R="search "
+    for DS in $IF_DNS_SEARCH ; do
+      R="${R} $DS"
+    done
+  R="${R}
+"
+  fi
+
+  for NS in $IF_DNS_NAMESERVERS ; do
+    R="${R}nameserver $NS
+"
+  done
+  #echo -n "$R" | $RESOLVCONF -x -p -a "${dev}"
+  echo -n "$R" | $RESOLVCONF -x -a "${dev}.inet"
+  ;;
+down)
+  $RESOLVCONF -d "${dev}.inet"
+  ;;
+esac
+
+# Workaround / jm@epiclabs.io 
+# force exit with no errors. Due to an apparent conflict with the Network Manager
+# $RESOLVCONF sometimes exits with error code 6 even though it has performed the
+# action correctly and OpenVPN shuts down.
+exit 0
+----
++
+save file
++
+open hungary.conf and add this snippet at end of file
++
+----
+script-security 2  
+up /etc/openvpn/update-resolv-conf
+down /etc/openvpn/update-resolv-conf
+----
++
+----
+sudo systemctl enable openvpn@client.service
+----
++
+. Configure Dante SOCKS5 server
++
+To see status on dante
++
+----
+systemctl status danted.service
+----
+a) First remove pre-installed config
++
+----
+sudo rm /etc/danted.conf
+----
+b)
++
+----
+sudo nano /etc/danted.conf
+----
++
+----
+logoutput: syslog
+user.privileged: root
+user.unprivileged: nobody
+
+# The listening network interface or address.
+internal: 0.0.0.0 port=1080
+
+# The proxying network interface or address.
+external: tun0
+
+# socks-rules determine what is proxied through the external interface.
+socksmethod: username
+
+# client-rules determine who can connect to the internal interface.
+clientmethod: none
+
+client pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+}
+
+socks pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+}
+----
++
+save file
++
+c) To start Dante service after openvpn is up you require a delay, but this does not work editing the service file, instead make use of sudo crontab -e, sudo make the cronjob run as root.
++
+----
+sudo crontab -e
+@reboot sleep 30 && systemctl restart danted.service
+----
++
+save file
++
+----
+systemctl enable danted.service
+----
+. Configure UFW firewall
++
+First deny all incoming and outgoing traffic 
++
+----
+sudo ufw default deny outgoing
+sudo ufw default deny incoming
+----
++
+Allow traffic incoming and outgoing with tun0 interface
++
+----
+sudo ufw allow out on tun0 from any to any
+sudo ufw allow in on tun0 from any to any
+sudo ufw allow 1080
+----
++
+Resolve hostname from openvpn host
++
+----
+sudo ufw allow out from any to [insert ip address]
+----
++
+Enable UFW
++
+----
+sudo ufw enable
+----
